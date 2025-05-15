@@ -1,0 +1,27 @@
+# ⛔ 데이터 파일: 용량 큼
+data/visual_genome/
+data/coco/
+data/processed/
+
+# 🧠 학습 결과물 (모델 체크포인트)
+merged-step-vgjson-grounding-cot-vqa-lora/
+step1-vgjson-grounding-lora/
+step1-vgjson-grounding-ve/
+
+# 📊 실험 로그
+wandb/
+train.log
+vg_step1_train_vision_encoder.log
+
+# 🔁 기타 캐시/로그
+*.pt
+*.bin
+*.safetensors
+*.pth
+*.zip
+*.log
+
+# 🤷‍♀️ VSCode나 기타 에디터 쓸 때
+.vscode/
+__pycache__/
+*.pyc
