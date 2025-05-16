@@ -166,7 +166,7 @@ def collate_fn(batch):
 training_args = TrainingArguments(
     output_dir=EXPERIMENT_NAME,
     per_device_train_batch_size=2,
-    gradient_accumulation_steps=8,
+    gradient_accumulation_steps=4,
     num_train_epochs=2,
     learning_rate=5e-5,
     bf16=True,

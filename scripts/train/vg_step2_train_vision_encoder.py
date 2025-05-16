@@ -18,7 +18,7 @@ import wandb
 # ========================
 MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
 PROJECT_NAME = "qwen2.5vl_step2_vision_encoder"
-EXPERIMENT_NAME = "step1-vgjson-visual-cot-ve"
+EXPERIMENT_NAME = "step2-vgjson-visual-cot-ve"
 lr = 5e-5
 wandb.init(
     project=PROJECT_NAME,
@@ -31,19 +31,26 @@ wandb.init(
 )
 
 # ========================
-# 2. 모델 로딩
+# 2. 모델 로딩 (checkpoint에서 이어받기)
 # ========================
-model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+CHECKPOINT_PATH = "step1-vgjson-grounding-ve/checkpoint-2900"
+
+base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.bfloat16,
     device_map="auto",
     trust_remote_code=True,
 )
-model.enable_input_require_grads()
 
-processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True, use_fast=True)
+# LoRA + 토크나이저 불러오기
+from peft import PeftModel
+
+model = PeftModel.from_pretrained(base_model, CHECKPOINT_PATH)
+
+# processor/tokenizer는 LoRA checkpoint에 맞춰 불러옴
+from transformers import AutoProcessor
+processor = AutoProcessor.from_pretrained(CHECKPOINT_PATH, trust_remote_code=True, use_fast=True)
 processor.tokenizer.pad_token = processor.tokenizer.eos_token
-
 special_tokens = {
     "additional_special_tokens": [
         "[objects]", "[/objects]",
@@ -52,7 +59,9 @@ special_tokens = {
     ]
 }
 num_added = processor.tokenizer.add_special_tokens(special_tokens)
-model.resize_token_embeddings(len(processor.tokenizer))
+
+if num_added > 0:
+    model.resize_token_embeddings(len(processor.tokenizer))
 
 print(f"✅ Special tokens added: {num_added}")
 

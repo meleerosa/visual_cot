@@ -1,7 +1,6 @@
 # ⛔ 데이터 파일: 용량 큼
 data/visual_genome/
 data/coco/
-data/processed/
 
 # 🧠 학습 결과물 (모델 체크포인트)
 merged-step-vgjson-grounding-cot-vqa-lora/
