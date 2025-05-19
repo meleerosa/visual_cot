@@ -16,73 +16,35 @@ import wandb
 # ========================
 # 1. 실험 초기화
 # ========================
-MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
+STEP1_MERGED_MODEL_PATH = "/root/project/step1-vgjson-grounding-ve-merged"
 PROJECT_NAME = "qwen2.5vl_step2_vision_encoder"
 EXPERIMENT_NAME = "step2-vgjson-visual-cot-ve"
 lr = 5e-5
+
 wandb.init(
     project=PROJECT_NAME,
     name=EXPERIMENT_NAME,
-    config={
-        "learning_rate": lr,
-        "epochs": 3,
-        "batch_size": 8,
-    }
+    config={"learning_rate": lr, "epochs": 3, "batch_size": 8}
 )
 
 # ========================
-# 2. 모델 로딩 (checkpoint에서 이어받기)
+# 2. 모델 로딩 (병합된 모델)
 # ========================
-CHECKPOINT_PATH = "step1-vgjson-grounding-ve/checkpoint-2900"
-
-base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    MODEL_NAME,
+model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    STEP1_MERGED_MODEL_PATH,
     torch_dtype=torch.bfloat16,
     device_map="auto",
     trust_remote_code=True,
 )
+model.enable_input_require_grads()
 
-# LoRA + 토크나이저 불러오기
-from peft import PeftModel
-
-model = PeftModel.from_pretrained(base_model, CHECKPOINT_PATH)
-
-# processor/tokenizer는 LoRA checkpoint에 맞춰 불러옴
-from transformers import AutoProcessor
-processor = AutoProcessor.from_pretrained(CHECKPOINT_PATH, trust_remote_code=True, use_fast=True)
+processor = AutoProcessor.from_pretrained(STEP1_MERGED_MODEL_PATH, trust_remote_code=True, use_fast=True)
 processor.tokenizer.pad_token = processor.tokenizer.eos_token
-special_tokens = {
-    "additional_special_tokens": [
-        "[objects]", "[/objects]",
-        "[reasoning]", "[/reasoning]",
-        "[answer]", "[/answer]"
-    ]
-}
-num_added = processor.tokenizer.add_special_tokens(special_tokens)
-
-if num_added > 0:
-    model.resize_token_embeddings(len(processor.tokenizer))
-
-print(f"✅ Special tokens added: {num_added}")
 
 # ========================
-# 3. LoRA 설정
+# 3. LoRA 설정 (step2용)
 # ========================
-visual_lora_targets = []
-for i in range(32):  # 32 visual blocks
-    visual_lora_targets += [
-        f"visual.blocks.{i}.attn.qkv",
-        f"visual.blocks.{i}.attn.proj",
-        f"visual.blocks.{i}.mlp.gate_proj",
-        f"visual.blocks.{i}.mlp.up_proj",
-        f"visual.blocks.{i}.mlp.down_proj",
-    ]
-
-visual_lora_targets += [
-    "visual.merger.mlp.0",
-    "visual.merger.mlp.2"
-]
-
+# text encoder 영역만 fine-tune (vision encoder는 이미 학습된 상태)
 text_lora_targets = [
     "q_proj", "k_proj", "v_proj", "o_proj",
     "gate_proj", "up_proj", "down_proj"
@@ -94,12 +56,14 @@ lora_config = LoraConfig(
     lora_dropout=0.05,
     bias="none",
     task_type=TaskType.CAUSAL_LM,
-    target_modules=text_lora_targets + visual_lora_targets
+    target_modules=text_lora_targets
 )
 
+from peft import get_peft_model
 model = get_peft_model(model, lora_config)
 
-print("Trainable params:", sum(p.numel() for p in model.parameters() if p.requires_grad))
+print("✅ LoRA added for step2.")
+print("Trainable parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
 # ========================
 # 4. 데이터 로딩
@@ -118,9 +82,9 @@ def try_load_image(image_id):
         path = os.path.join(folder, f"{image_id}.jpg")
         if os.path.exists(path):
             return Image.open(path).convert("RGB").resize((448, 448))
-    raise FileNotFoundError(f"❌ 이미지 {image_id}.jpg를 두 폴더에서 찾을 수 없습니다.")
+    raise FileNotFoundError(f"Image {image_id}.jpg not found.")
 
-class VGStep1Dataset(Dataset):
+class VGStep2Dataset(Dataset):
     def __init__(self, data):
         self.data = data
 
@@ -130,30 +94,15 @@ class VGStep1Dataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         image = try_load_image(sample["image_id"])
-
         messages = [
-            {
-                "role": "system",
-                "content": "You are a visual assistant who provides detailed reasoning before answering."
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": sample["input"]}
-                ]
-            },
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": sample["output"]}
-                ]
-            }
+            {"role": "system", "content": "You are a visual assistant who provides detailed reasoning before answering."},
+            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": sample["input"]}]},
+            {"role": "assistant", "content": [{"type": "text", "text": sample["output"]}]}
         ]
         return {"image": image, "messages": messages}
 
-train_dataset = VGStep1Dataset(train_data)
-val_dataset = VGStep1Dataset(val_data)
+train_dataset = VGStep2Dataset(train_data)
+val_dataset = VGStep2Dataset(val_data)
 
 # ========================
 # 5. Collate 함수
@@ -162,10 +111,7 @@ def collate_fn(batch):
     messages = [sample["messages"] for sample in batch]
     images = [sample["image"] for sample in batch]
 
-    rendered = [
-        processor.apply_chat_template(m, tokenize=False, add_generation_prompt=False)
-        for m in messages
-    ]
+    rendered = [processor.apply_chat_template(m, tokenize=False, add_generation_prompt=False) for m in messages]
 
     encoded = processor(
         text=rendered,
@@ -174,7 +120,6 @@ def collate_fn(batch):
         padding=True,
         truncation=False
     )
-
     labels = encoded["input_ids"].clone()
     labels[labels == processor.tokenizer.pad_token_id] = -100
     encoded["labels"] = labels
@@ -187,11 +132,10 @@ def collate_fn(batch):
 training_args = TrainingArguments(
     output_dir=EXPERIMENT_NAME,
     per_device_train_batch_size=2,
-    gradient_accumulation_steps=8,
+    gradient_accumulation_steps=4,
     num_train_epochs=2,
-    learning_rate=5e-5,
+    learning_rate=lr,
     bf16=True,
-    fp16=False,
     gradient_checkpointing=True,
     save_steps=100,
     logging_steps=10,
@@ -216,14 +160,7 @@ trainer = Trainer(
 )
 
 trainer.train()
-trainer.save_model(EXPERIMENT_NAME)
-processor.save_pretrained(EXPERIMENT_NAME)
-trainer.model.save_pretrained(EXPERIMENT_NAME)
-trainer.evaluate()
 
-from peft import PeftModel
-# processor (tokenizer 포함) 저장
-processor.save_pretrained(EXPERIMENT_NAME)
-
-# 모델 저장 (LoRA + 임베딩 포함)
+# ✅ 저장
 model.save_pretrained(EXPERIMENT_NAME, safe_serialization=True)
+processor.save_pretrained(EXPERIMENT_NAME)

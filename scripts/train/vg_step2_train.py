@@ -194,5 +194,5 @@ trainer = Trainer(
 )
 
 trainer.train()
-trainer.save_model(EXPERIMENT_NAME)
 processor.save_pretrained(EXPERIMENT_NAME)
+model.save_pretrained(EXPERIMENT_NAME)

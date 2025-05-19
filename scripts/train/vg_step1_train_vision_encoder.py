@@ -207,14 +207,15 @@ trainer = Trainer(
 )
 
 trainer.train()
-trainer.save_model(EXPERIMENT_NAME)
-processor.save_pretrained(EXPERIMENT_NAME)
-trainer.model.save_pretrained(EXPERIMENT_NAME)
-trainer.evaluate()
 
-from peft import PeftModel
-# processor (tokenizer 포함) 저장
-processor.save_pretrained(EXPERIMENT_NAME)
+# 1) LoRA 어댑터를 베이스 모델에 병합하고, PEFT 래퍼를 언로드합니다.
+merged_model = model.merge_and_unload()
 
-# 모델 저장 (LoRA + 임베딩 포함)
-model.save_pretrained(EXPERIMENT_NAME, safe_serialization=True)
+# 2) 병합된 모델 전체(weights + special-token 임베딩 포함)를 저장할 디렉토리 지정
+MERGED_DIR = EXPERIMENT_NAME + "-merged"
+
+# 3) 모델 저장 (base model + LoRA weight + updated embeddings)
+merged_model.save_pretrained(MERGED_DIR, safe_serialization=True)
+
+# 4) 토크나이저(특수 토큰 포함)도 함께 저장
+processor.save_pretrained(MERGED_DIR)
