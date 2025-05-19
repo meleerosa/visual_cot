@@ -41,6 +41,16 @@ model.enable_input_require_grads()
 processor = AutoProcessor.from_pretrained(STEP1_MERGED_MODEL_PATH, trust_remote_code=True, use_fast=True)
 processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
+# 다시 넣어줘야 안전함
+special_tokens = {
+    "additional_special_tokens": [
+        "[objects]", "[/objects]",
+        "[reasoning]", "[/reasoning]",
+        "[answer]", "[/answer]"
+    ]
+}
+num_added = processor.tokenizer.add_special_tokens(special_tokens)
+model.resize_token_embeddings(len(processor.tokenizer))
 # ========================
 # 3. LoRA 설정 (step2용)
 # ========================

@@ -1,102 +1,66 @@
-import os
 import torch
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from PIL import Image
-from qwen_vl_utils import process_vision_info  # Qwen2.5-VL repo에서 제공되는 util
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from peft import PeftModel
 
-# ========================
-# 1. 경로 설정
-# ========================
-BASE_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"  # LoRA의 base
-MODEL_DIR = "/root/project/step1-vgjson-grounding-ve-merged"  # LoRA + tokenizer 저장된 경로
-IMG_PATH = "/root/project/data/visual_genome/VG_100K/2.jpg"
-PROMPT = "Who is wearing the yellow shorts?"
+# ========== 경로 설정 ==========
+base_model_path = "/root/project/step1-vgjson-grounding-ve-merged"  # base + vision encoder 병합된 거
+lora_model_path = "/root/project/step2-vgjson-visual-cot-ve"  # step2 학습한 LoRA 결과
+image_path = "/root/project/data/visual_genome/VG_100K_2/51.jpg"  # 테스트용 이미지 ID 경로
+input_text = "What is happening in the scene?"  # 너의 질문
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ========================
-# 2. Processor (tokenizer 포함) 불러오기
-# ========================
-processor = AutoProcessor.from_pretrained(
-    MODEL_DIR,
-    trust_remote_code=True,
-    use_fast=True
-)
-
-# ========================
-# 3. Base 모델 로딩 후 임베딩 확장
-# ========================
+# ========== 모델 + LoRA 로딩 ==========
 base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    BASE_MODEL,
+    base_model_path,
     torch_dtype=torch.bfloat16,
     device_map="auto",
     trust_remote_code=True
 )
 
-# 중요: 학습 당시 special token 추가한 만큼 embedding 사이즈 늘려줌
-base_model.resize_token_embeddings(len(processor.tokenizer))
-
-# ========================
-# 4. LoRA 어댑터 로딩
-# ========================
-model = PeftModel.from_pretrained(base_model, MODEL_DIR)
+model = PeftModel.from_pretrained(base_model, lora_model_path)
 model.eval()
 
-# ========================
-# 5. Inference 준비
-# ========================
-image = Image.open(IMG_PATH).convert("RGB")
+# ========== Processor 로딩 ==========
+processor = AutoProcessor.from_pretrained(base_model_path, trust_remote_code=True)
+processor.tokenizer.pad_token = processor.tokenizer.eos_token  # 안전장치
 
+if "[objects]" not in processor.tokenizer.get_vocab():
+    raise ValueError("Tokenizer에 special token이 안 들어있음. 저장 문제일 수 있음.")
+# ========== 이미지 로딩 ==========
+def load_image(path):
+    return Image.open(path).convert("RGB").resize((448, 448))
+
+image = load_image(image_path)
+
+# ========== 메시지 구성 ==========
 messages = [
-    {
-        "role": "user",
-        "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": PROMPT},
-        ],
-    }
+    {"role": "system", "content": "You are a visual assistant who provides detailed reasoning before answering."},
+    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": input_text}]}
 ]
 
-text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-image_inputs, video_inputs = process_vision_info(messages)
+# ========== 입력 텍스트/이미지 전처리 ==========
+rendered = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 inputs = processor(
-    text=[text_prompt],
-    images=image_inputs,
-    videos=video_inputs,
+    text=rendered,
+    images=[image],
     return_tensors="pt",
     padding=True
-).to(device)
+).to(model.device)
 
-# ========================
-# 6. Generate
-# ========================
+# ========== 생성 ==========
 with torch.no_grad():
     generated_ids = model.generate(
         **inputs,
-        max_new_tokens=2048,
-        do_sample=True,  # 중요
-        temperature=0.8,
-        top_p=0.9,
-        repetition_penalty=1.2,  # 👈 필수
-        no_repeat_ngram_size=3,  # 👈 반복 억제
-        eos_token_id=processor.tokenizer.eos_token_id,
+        max_new_tokens=256,
+        do_sample=False,
+        repetition_penalty=1.2,
+        no_repeat_ngram_size=3,
+        early_stopping=True
     )
 
-# input prompt 길이만큼 잘라서 output만 추출
-generated_ids_trimmed = [
-    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-]
-
-output_text = processor.batch_decode(
-    generated_ids_trimmed,
-    skip_special_tokens=True,
-    clean_up_tokenization_spaces=True
-)
-
-# ========================
-# 7. 출력
-# ========================
-print("\n🧾 Model Output:\n")
-print(output_text[0])
+# ========== 출력 디코딩 ==========
+output_text = processor.tokenizer.decode(generated_ids[0], skip_special_tokens=False)
+print(processor.tokenizer.special_tokens_map)
+print("🧠 Model Output:\n")
+print(output_text)

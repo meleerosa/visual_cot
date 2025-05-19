@@ -31,7 +31,7 @@ wandb.init(
 )
 
 # ========================
-# 2. 모델 로딩
+# 2. 모델 로딩 + special token 등록
 # ========================
 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     MODEL_NAME,
@@ -44,6 +44,7 @@ model.enable_input_require_grads()
 processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True, use_fast=True)
 processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
+# ✅ Special token 등록 + 임베딩 확장
 special_tokens = {
     "additional_special_tokens": [
         "[objects]", "[/objects]",
@@ -53,11 +54,10 @@ special_tokens = {
 }
 num_added = processor.tokenizer.add_special_tokens(special_tokens)
 model.resize_token_embeddings(len(processor.tokenizer))
-
 print(f"✅ Special tokens added: {num_added}")
 
 # ========================
-# 3. LoRA 설정
+# 3. LoRA 설정 + 임베딩 학습 설정
 # ========================
 visual_lora_targets = []
 for i in range(32):  # 32 visual blocks
@@ -90,7 +90,10 @@ lora_config = LoraConfig(
 
 model = get_peft_model(model, lora_config)
 
-print("Trainable params:", sum(p.numel() for p in model.parameters() if p.requires_grad))
+# ✅ special token 임베딩 학습 가능하게 설정
+model.get_input_embeddings().weight.requires_grad = True
+
+print("✅ Trainable params:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
 # ========================
 # 4. 데이터 로딩
@@ -208,14 +211,8 @@ trainer = Trainer(
 
 trainer.train()
 
-# 1) LoRA 어댑터를 베이스 모델에 병합하고, PEFT 래퍼를 언로드합니다.
+# ✅ 병합 후 저장
 merged_model = model.merge_and_unload()
-
-# 2) 병합된 모델 전체(weights + special-token 임베딩 포함)를 저장할 디렉토리 지정
 MERGED_DIR = EXPERIMENT_NAME + "-merged"
-
-# 3) 모델 저장 (base model + LoRA weight + updated embeddings)
 merged_model.save_pretrained(MERGED_DIR, safe_serialization=True)
-
-# 4) 토크나이저(특수 토큰 포함)도 함께 저장
 processor.save_pretrained(MERGED_DIR)
